@@ -52,7 +52,7 @@ image_tensor, orig_img_tensor, annotation_tensor = tf.cond(is_training_placehold
 
 feed_dict_to_use = {is_training_placeholder: True}
 
-upsample_factor = 16
+upsample_factor = 8 # FCN 8S 上采样upsample_factor为8
 number_of_classes = 21
 
 log_folder = os.path.join(FLAGS.output_dir, 'train')
@@ -84,14 +84,16 @@ upsampled_logits_shape = tf.stack([
                                   downsampled_logits_shape[3]
                                   ])
 
-
+############################ FCN 8S CODE #######################
+#取出pool4的feature map
 pool4_feature = end_points['vgg_16/pool4']
+#对pool4的feature map进行分类并得到logits
 with tf.variable_scope('vgg_16/fc8'):
     aux_logits_16s = slim.conv2d(pool4_feature, number_of_classes, [1, 1],
                                  activation_fn=None,
                                  weights_initializer=tf.zeros_initializer,
                                  scope='conv_pool4')
-
+#对fc8的logits进行2倍的上采样
 # Perform the upsampling
 upsample_filter_np_x2 = bilinear_upsample_weights(2,  # upsample_factor,
                                                   number_of_classes)
@@ -103,19 +105,40 @@ upsampled_logits = tf.nn.conv2d_transpose(logits, upsample_filter_tensor_x2,
                                           strides=[1, 2, 2, 1],
                                           padding='SAME')
 
-
+#将pool4的feature map进行分类并得到logits与fc8的logits进行2倍的上采样得到的logits相加得到 14*14*21的logits_1
 upsampled_logits = upsampled_logits + aux_logits_16s
+#取出pool3的feature map
+pool3_feature = end_points['vgg_16/pool3']
+#对pool3的feature map进行分类并得到logits
+with tf.variable_scope('vgg_16/fc8'):
+    aux_logits_8s = slim.conv2d(pool3_feature, number_of_classes, [1, 1],
+                                 activation_fn=None,
+                                 weights_initializer=tf.zeros_initializer,
+                                 scope='conv_pool3')
+#对之前得到的logits_1进行2倍的上采样
+upsample_filter_np_x2_2 = bilinear_upsample_weights(2,  # upsample_factor,
+                                                  number_of_classes)
 
-upsample_filter_np_x16 = bilinear_upsample_weights(upsample_factor,
+upsample_filter_tensor_x2_2 = tf.Variable(upsample_filter_np_x2_2, name='vgg_16/fc8/t_conv_x2_2')
+
+upsampled_logits = tf.nn.conv2d_transpose(upsampled_logits, upsample_filter_tensor_x2_2,
+                                          output_shape=tf.shape(aux_logits_8s),
+                                          strides=[1, 2, 2, 1],
+                                          padding='SAME')
+
+#将pool3的feature map进行分类并得到logits与logits_1进行2倍的上采样得到的logits相加得到 28*28*21的logits_2
+upsampled_logits = upsampled_logits + aux_logits_8s
+#对之前得到的logits_2进行8倍的上采样
+upsample_filter_np_x8 = bilinear_upsample_weights(upsample_factor,
                                                    number_of_classes)
 
-upsample_filter_tensor_x16 = tf.Variable(upsample_filter_np_x16, name='vgg_16/fc8/t_conv_x16')
-upsampled_logits = tf.nn.conv2d_transpose(upsampled_logits, upsample_filter_tensor_x16,
+upsample_filter_tensor_x8 = tf.Variable(upsample_filter_np_x8, name='vgg_16/fc8/t_conv_x8')
+upsampled_logits = tf.nn.conv2d_transpose(upsampled_logits, upsample_filter_tensor_x8,
                                           output_shape=upsampled_logits_shape,
                                           strides=[1, upsample_factor, upsample_factor, 1],
                                           padding='SAME')
 
-
+############################ FCN 8S CODE END #######################
 lbl_onehot = tf.one_hot(annotation_tensor, number_of_classes)
 cross_entropies = tf.nn.softmax_cross_entropy_with_logits(logits=upsampled_logits,
                                                           labels=lbl_onehot)
